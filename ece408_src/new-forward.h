@@ -21,15 +21,23 @@ void forward(mshadow::Tensor<cpu, 4, DType> &y, const mshadow::Tensor<cpu, 4, DT
     */
 
     const int B = x.shape_[0];
-    // const int M = y.shape_[1];
-    // const int C = x.shape_[1];
-    // const int H = x.shape_[2];
-    // const int W = x.shape_[3];
-    // const int K = k.shape_[3];
+    const int M = y.shape_[1];
+    const int C = x.shape_[1];
+    const int H = x.shape_[2];
+    const int W = x.shape_[3];
+    const int K = k.shape_[3];
 
     for (int b = 0; b < B; ++b) {
+        for(int m = 0; m<M, ++m){
+            for(int c=0; c<C; ++c){
+                for(int h=0; h<H; ++h){
+                    for(int w = )
+                }
 
-        CHECK_EQ(0,1) << "Remove this line and replace it with your implementation.";
+            }
+        }
+
+        // CHECK_EQ(0,1) << "Remove this line and replace it with your implementation.";
 
         /* ... a bunch of nested loops later...
             y[b][m][h][w] += x[b][c][h + p][w + q] * k[m][c][p][q];
