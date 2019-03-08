@@ -27,12 +27,16 @@ void forward(mshadow::Tensor<cpu, 4, DType> &y, const mshadow::Tensor<cpu, 4, DT
     const int W = x.shape_[3];
     const int K = k.shape_[3];
 
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+
     for (int b = 0; b < B; ++b) {
         for(int m = 0; m<M; ++m){
             for(int c=0; c<C; ++c){
-                for(int h=0; h<H; ++h){
-                    for(int w =0; w<W;++w){
-                        for(int k=0; k<K;++k){
+                for(int h=0; h<H_out; ++h){
+                    for(int w =0; w<W_out;++w){
+                        for(int p=0; p<K;++p){
+                            for(int q=0; q<K;++q){
                             y[b][m][h][w] += x[b][c][h + p][w + q] * k[m][c][p][q];
 
                         }
