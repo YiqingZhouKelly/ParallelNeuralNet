@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-
+#define TILE_WIDTH 16
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -32,7 +32,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
 /* my code ends here*/
     int b,m,h,w,c,p,q;
-    int W_grid = W_out / 16;
+    int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
     b = blockIdx.x;
     m = blockIdx.y;
     h = blockIdx.z / W_grid + threadIdx.y;
@@ -43,7 +43,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     for(c = 0; c<C; ++c){
         for(p=0; p<K; ++p){
             for(q =0; q<K; ++q){
-                sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+                    sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
             }
         }
     }
@@ -61,7 +61,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &w)
 {
-    #define TILE_WIDTH 16
+    
 
     // Use mxnet's CHECK_EQ to do assertions.
     // Remove this assertion when you do your implementation!
@@ -78,8 +78,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
 
-    int W_grid = W_out / TILE_WIDTH;
-    int H_grid = H_out / TILE_WIDTH;
+    int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
+    int H_grid = ceil(H_out / (TILE_WIDTH*1.0));
     int Z = H_grid * W_grid;
     // Set the kernel dimensions
     dim3 gridDim(B,M,Z);
@@ -90,7 +90,6 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-
 }
 
 /* 
