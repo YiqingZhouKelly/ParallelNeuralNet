@@ -32,19 +32,19 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
 /* my code ends here*/
     int b,m,h,w,c,p,q;
-    int W_grid = W_out / blockDim.x;
-    int H_grid = H_out / blockIdx.z;
+    int W_grid = W_out / 16;
     b = blockIdx.x;
     m = blockIdx.y;
     h = blockIdx.z / W_grid + threadIdx.y;
-    w = blockIdx.z % W_grid +threadIdx.x;
+    w = blockIdx.z % W_grid + threadIdx.x;
 
     /*The following part is not parallelizable*/
     float sum = 0.0;
     for(c = 0; c<C; ++c){
         for(p=0; p<K; ++p){
-            for(q =0; q<K; q++)
+            for(q =0; q<K; ++q){
                 sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+            }
         }
     }
     y4d(b,m,h,w) =sum;
@@ -82,12 +82,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     int H_grid = H_out / TILE_WIDTH;
     int Z = H_grid * W_grid;
     // Set the kernel dimensions
-
-    dim3 gridDim(TILE_WIDTH, TILE_WIDTH, 1);
-    dim3 blockDim(B,M,Z);
+    dim3 gridDim(B,M,Z);
+    dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
 
     // Call the kernel
-    forward_kernel<<<gridDim, blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+    forward_kernel<<<gridDim,blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
