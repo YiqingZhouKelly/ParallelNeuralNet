@@ -35,19 +35,21 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
     b = blockIdx.x;
     m = blockIdx.y;
-    h = blockIdx.z / W_grid + threadIdx.y;
-    w = blockIdx.z % W_grid + threadIdx.x;
+    h = (blockIdx.z / W_grid)* TILE_WIDTH + threadIdx.y;
+    w = (blockIdx.z % W_grid)* TILE_WIDTH + threadIdx.x;
 
     /*The following part is not parallelizable*/
     float sum = 0.0;
     for(c = 0; c<C; ++c){
         for(p=0; p<K; ++p){
             for(q =0; q<K; ++q){
-                    sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+                    if(w<W_out && h<H_out)
+                        sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
             }
         }
     }
-    y4d(b,m,h,w) =sum;
+    if(w<W_out && h<H_out)
+        y4d(b,m,h,w) =sum;
 #undef y4d
 #undef x4d
 #undef k4d
