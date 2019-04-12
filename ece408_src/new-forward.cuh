@@ -11,7 +11,6 @@ namespace op
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
-
     /*
     Modify this function to implement the forward pass described in Chapter 16.
     We have added an additional dimension to the tensors to support an entire mini-batch
@@ -19,6 +18,19 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
     */
 
+    __shared__ float k_shared[C*K*K];
+    int b,m,h,w,c,p,q;
+    b = blockIdx.x;
+    m = blockIdx.y;
+    int tid = m*TILE_WIDTH+b;
+    int lpt = ceil(C*K*K*1.0/(TILE_WIDTH*TILE_WIDTH));
+    int cursor = tid;
+    while(cursor<C*K*K){
+        k_shared[cursor]=k[m*C*K*K+cursor];
+        cursor+=TILE_WIDTH*TILE_WIDTH;
+    }
+
+    __syncthreads();
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
     // two lines deleted 
@@ -31,10 +43,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 /* my code starts here */
 
 /* my code ends here*/
-    int b,m,h,w,c,p,q;
     int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
-    b = blockIdx.x;
-    m = blockIdx.y;
     h = (blockIdx.z / W_grid)* TILE_WIDTH + threadIdx.y;
     w = (blockIdx.z % W_grid)* TILE_WIDTH + threadIdx.x;
 
@@ -44,7 +53,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         for(p=0; p<K; ++p){
             for(q =0; q<K; ++q){
                     if(w<W_out && h<H_out)
-                        sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+                        sum+= x4d(b,c,h+p,w+q)*k_shared[c*K*K+p*K+q];
             }
         }
     }
