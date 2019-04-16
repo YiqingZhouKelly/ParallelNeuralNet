@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 16
+#define TILE_WIDTH 8
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -14,8 +14,8 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-#define x_shared3d(c,w,h) x_shared[c*(TWK)*(TWK)+w*(TWK)+h]
 #define TWK (TILE_WIDTH+K)
+#define x_shared3d(c,w,h) x_shared[(c)*(TWK)*(TWK)+(w)*(TWK)+(h)]
     /*
     Modify this function to implement the forward pass described in Chapter 16.
     We have added an additional dimension to the tensors to support an entire mini-batch
@@ -45,13 +45,13 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         k_shared[cursor]=k[m*C*K*K+cursor];
         cursor+=TILE_WIDTH*TILE_WIDTH;
     }
-
+    __syncthreads();
     for (int c = 0; c < C; ++c){
-        int s1 = threadIdx.x;
+        int s1 = threadIdx.y;
         while( s1 < TWK){
-            int s2 = threadIdx.y;
+            int s2 = threadIdx.x;
             while( s2 < TWK){
-                if (w < W_out && h < H_out) x_shared[c*TWK*TWK+ s1* TWK + s2] = x4d(b,c, h+s1, w + s2);
+                x_shared3d(c,s2,s1) = x4d(b,c, h + s1 - ty, w + s2 - tx);
                 s2 += TILE_WIDTH;
             }           
             s1 += TILE_WIDTH;
@@ -99,7 +99,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         for(c = 0; c<C; ++c){
             for(p=0; p<K; ++p){
                 for(q =0; q<K; ++q){
-                            sum+= x_shared3d(c,h+p,w+q)*k_shared[c*K*K+p*K + q];
+                    sum+= x_shared3d(c,tx+q,ty+p)*k_shared[c*K*K+p*K + q];
                 }
             }
         }
