@@ -9,7 +9,9 @@ namespace mxnet
 namespace op
 {
 
-__global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void forward_kernel(float *y, const float *x, const float *k, 
+                               const int B, const int M, const int C, 
+                               const int H, const int W, const int K)
 {   
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
@@ -98,7 +100,9 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
    For ECE408, we only expect the float version of the operator to be called, so here we specialize with only floats.
 */
 template <>
-void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &w)
+void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
+                         const mshadow::Tensor<gpu, 4, float> &x, 
+                         const mshadow::Tensor<gpu, 4, float> &w)
 {
     
 
@@ -125,7 +129,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
 
     // Call the kernel
-    forward_kernel<<<gridDim,blockDim, sizeof(float)*(C*K*K+C*(TILE_WIDTH+K)*(TILE_WIDTH+K))>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+    forward_kernel<<<gridDim,blockDim, 
+                    sizeof(float)*(C*K*K+C*(TILE_WIDTH+K)*(TILE_WIDTH+K))>>>
+                    (y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
