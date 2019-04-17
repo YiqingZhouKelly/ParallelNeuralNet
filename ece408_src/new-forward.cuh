@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 8
+#define TILE_WIDTH 16
 #include <mxnet/base.h>
 
 namespace mxnet
@@ -45,13 +45,14 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         k_shared[cursor]=k[m*C*K*K+cursor];
         cursor+=TILE_WIDTH*TILE_WIDTH;
     }
-    __syncthreads();
+
+    /* load x into shared memory Type1*/
     for (int c = 0; c < C; ++c){
         int s1 = threadIdx.y;
         while( s1 < TWK){
             int s2 = threadIdx.x;
             while( s2 < TWK){
-                x_shared3d(c,s2,s1) = x4d(b,c, h + s1 - ty, w + s2 - tx);
+                x_shared3d(c,s1,s2) = x4d(b,c, h + s1 - ty, w + s2 - tx);
                 s2 += TILE_WIDTH;
             }           
             s1 += TILE_WIDTH;
@@ -59,47 +60,25 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     }
 
 
-
-    // //load upper left
-    // if(b*TILE_WIDTH+tx<W && m*TILE_WIDTH+ty<H){
-    //     for(int c=0; c<C; ++c){
-    //         x_shared3d(c,tx,ty)= x4d(b,c,tx,ty);
+    /* load x into shared memory Type2*/
+    // for(int c=0; c<C; ++c){
+    //     int tid = ty*TILE_WIDTH+tx;
+    //     while(tid<TWK*TWK){
+    //         // if(h+(tid/TWK)-ty<H && w+tid%TWK-tx<W)
+    //             x_shared[c*TWK*TWK+tid] = x4d(b,c,h+(tid/TWK)-ty,w+(tid%TWK)-tx);
+    //         tid+=TILE_WIDTH*TILE_WIDTH;
     //     }
     // }
-    // //load upper right
-    // int tmpx= tx+TILE_WIDTH;
-    // if(b*TILE_WIDTH+tmpx<W+K && m*TILE_WIDTH+ty<H){
-    //     for(int c=0; c<C; ++c){
-    //         x_shared3d(c,tmpx,ty)= x4d(b,c,tmpx,ty);
-    //     }
-    // }
-    // // load lower left
-    // int tmpy= ty+TILE_WIDTH;
-    // if(b*TILE_WIDTH+tx<W && m*TILE_WIDTH+tmpy<H+K){
-    //     for(int c=0; c<C; ++c){
-    //         x_shared3d(c,tx,tmpy)= x4d(b,c,tx,tmpy);
-    //     }
-    // }
-    // // load lower right
+    
 
     __syncthreads();
 
-// An example use of these macros:
-// float a = y4d(0,0,0,0)
-// y4d(0,0,0,0) = a
-
-/* my code starts here */
-
-/* my code ends here*/
-
-
-    /*The following part is not parallelizable*/
     float sum = 0.0;
     if(w<W_out && h<H_out){
         for(c = 0; c<C; ++c){
             for(p=0; p<K; ++p){
                 for(q =0; q<K; ++q){
-                    sum+= x_shared3d(c,tx+q,ty+p)*k_shared[c*K*K+p*K + q];
+                    sum+= x_shared3d(c,ty+p,tx+q)*k_shared[c*K*K + p*K + q];
                 }
             }
         }
