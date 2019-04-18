@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 16
+#define TILE_WIDTH 8
 #include <mxnet/base.h>
 
 namespace mxnet
