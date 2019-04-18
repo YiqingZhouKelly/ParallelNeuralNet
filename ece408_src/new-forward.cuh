@@ -1,13 +1,14 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 8
+#define TILE_WIDTH 16
 #include <mxnet/base.h>
 
 namespace mxnet
 {
 namespace op
 {
+__constant__ float k_const[4096];
 __global__ void forward_kernel(float *y, const float *x, const float *k, 
                                const int B, const int M, const int C, 
                                const int H, const int W, const int K)
@@ -24,8 +25,8 @@ __global__ void forward_kernel(float *y, const float *x, const float *k,
     We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
     */
 
-    extern __shared__ float k_shared[];
-    float* x_shared = k_shared+ C*K*K;
+    extern __shared__ float x_shared[];
+    // float* x_shared = k_shared+ C*K*K;
     int b,m,h,w,c,p,q,tx,ty;
     
     const int H_out = H - K + 1;
@@ -41,35 +42,35 @@ __global__ void forward_kernel(float *y, const float *x, const float *k,
     tx = threadIdx.x;
     ty = threadIdx.y;
     //shared k
-    int cursor = ty*TILE_WIDTH+tx;
-    while(cursor<C*K*K){
-        k_shared[cursor]=k[m*C*K*K+cursor];
-        cursor+=TILE_WIDTH*TILE_WIDTH;
-    }
+    // int cursor = ty*TILE_WIDTH+tx;
+    // while(cursor<C*K*K){
+    //     k_shared[cursor]=k[m*C*K*K+cursor];
+    //     cursor+=TILE_WIDTH*TILE_WIDTH;
+    // }
 
     /* load x into shared memory Type1*/
-    for (int c = 0; c < C; ++c){
-        int s1 = threadIdx.y;
-        while( s1 < TWK){
-            int s2 = threadIdx.x;
-            while( s2 < TWK){
-                x_shared3d(c,s1,s2) = x4d(b,c, h + s1 - ty, w + s2 - tx);
-                s2 += TILE_WIDTH;
-            }           
-            s1 += TILE_WIDTH;
-        }
-    }
+    // for (int c = 0; c < C; ++c){
+    //     int s1 = threadIdx.y;
+    //     while( s1 < TWK){
+    //         int s2 = threadIdx.x;
+    //         while( s2 < TWK){
+    //             x_shared3d(c,s1,s2) = x4d(b,c, h + s1 - ty, w + s2 - tx);
+    //             s2 += TILE_WIDTH;
+    //         }           
+    //         s1 += TILE_WIDTH;
+    //     }
+    // }
 
 
     /* load x into shared memory Type2*/
-    // for(int c=0; c<C; ++c){
-    //     int tid = ty*TILE_WIDTH+tx;
-    //     while(tid<TWK*TWK){
-    //         // if(h+(tid/TWK)-ty<H && w+tid%TWK-tx<W)
-    //             x_shared[c*TWK*TWK+tid] = x4d(b,c,h+(tid/TWK)-ty,w+(tid%TWK)-tx);
-    //         tid+=TILE_WIDTH*TILE_WIDTH;
-    //     }
-    // }
+    for(int c=0; c<C; ++c){
+        int tid = ty*TILE_WIDTH+tx;
+        while(tid<TWK*TWK){
+            // if(h+(tid/TWK)-ty<H && w+tid%TWK-tx<W)
+                x_shared[c*TWK*TWK+tid] = x4d(b,c,h+(tid/TWK)-ty,w+(tid%TWK)-tx);
+            tid+=TILE_WIDTH*TILE_WIDTH;
+        }
+    }
     
 
     __syncthreads();
@@ -79,7 +80,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k,
         for(c = 0; c<C; ++c){
             for(p=0; p<K; ++p){
                 for(q =0; q<K; ++q){
-                    sum+= x_shared3d(c,ty+p,tx+q)*k_shared[c*K*K + p*K + q];
+                    sum+= x_shared3d(c,ty+p,tx+q)*k_const[m*C*K*K +c*K*K + p*K + q];
                 }
             }
         }
@@ -128,8 +129,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
 
     // Call the kernel
+    cudaMemcpyToSymbol(k_const,w.dptr_, sizeof(float)*C*K*K*M, 0);
     forward_kernel<<<gridDim,blockDim, 
-                    sizeof(float)*(C*K*K+C*(TILE_WIDTH+K)*(TILE_WIDTH+K))>>>
+                    sizeof(float)*(C*(TILE_WIDTH+K)*(TILE_WIDTH+K))>>>
                     (y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
