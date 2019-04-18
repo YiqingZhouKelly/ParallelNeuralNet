@@ -8,7 +8,9 @@ namespace mxnet
 {
 namespace op
 {
-
+__device__ void copy_k_to_shared{
+    
+}
 __global__ void forward_kernel(float *y, const float *x, const float *k, 
                                const int B, const int M, const int C, 
                                const int H, const int W, const int K)
@@ -42,11 +44,11 @@ __global__ void forward_kernel(float *y, const float *x, const float *k,
     tx = threadIdx.x;
     ty = threadIdx.y;
     //shared k
-    int cursor = ty*TILE_WIDTH+tx;
-    while(cursor<C*K*K){
-        k_shared[cursor]=k[m*C*K*K+cursor];
-        cursor+=TILE_WIDTH*TILE_WIDTH;
-    }
+    // int cursor = ty*TILE_WIDTH+tx;
+    // while(cursor<C*K*K){
+    //     k_shared[cursor]=k[m*C*K*K+cursor];
+    //     cursor+=TILE_WIDTH*TILE_WIDTH;
+    // }
 
     /* load x into shared memory Type1*/
     for (int c = 0; c < C; ++c){
