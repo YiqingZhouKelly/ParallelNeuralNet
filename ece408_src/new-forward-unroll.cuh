@@ -82,16 +82,23 @@ __global__ void forward_kernel_unrolling(float *y, const float *unrolled_x, cons
                                const int B, const int M, const int C, 
                                const int H, const int W, const int K)
 {   
-
+    // unrollx_kernel(int C, int K,int H, int W, const float* x, float* unroll_x);
 }
 
 
 
 
-__global__ void matrixMultiplyShared(float *unrolled_k, float *unrolled_x, float *y,
+__global__ void matrixMultiplyShared(float *A, float *unrolled_x, float *C,
                                      int numARows, int numAColumns,
                                      int numBRows, int numBColumns,
-                                     int numCRows, int numCColumns) {
+                                     int numCRows, int numCColumns,
+                                     int W_out, int H_out) {
+    /* Warning: Being lazy, I am abusing notation here. A is a 2d array, unrolled_x and output C are 
+     * both 3D arrays!!  numrow/ numcol for 3D array are the 2 least significant dimension. The most 
+     * significant dim is B, which is mapped to threadidx.z, so do not need to explicitly take care
+     * of it during computation, but you do need to be careful when read/ write to 3D arrays.
+     */
+      float* B = unrolled_x+ blockIdx.z* (numBColumns*numBRows); // b = blockIdx.z
       __shared__ float subTileM[32][32];
       __shared__ float subTileN[32][32];
       int bx = blockIdx.x;  int by = blockIdx.y;
@@ -121,8 +128,11 @@ __global__ void matrixMultiplyShared(float *unrolled_k, float *unrolled_x, float
               Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
      }  
-     if (Row < numCRows && Col < numCColumns) C[Row*numCColumns+Col] = Pvalue;
- 
+     //numCRows =M
+     #define C4d(b,m,y,x) C[(b)*(numCRows*H_out*W_out) +(m)*(H_out*W_out)+(y)*(W_out)+(x)]
+     if (Row < numCRows && Col < numCColumns) C3d(Row,Col/W_out, Col%W_out)=Pvalue;
+     //C[blockIdx.z*(numCColumns*numCRows)+Row*numCColumns+Col] = Pvalue;
+     #undef C4d
 }
 
 
@@ -206,7 +216,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     int Z = H_grid * W_grid;
 
     cudaMemcpyToSymbol(k_const,w.dptr_, sizeof(float)*C*K*K*M,0);
-
+    //*************************************//
     //cpu unrolling k
     float* k = w.dptr_;
     float* unrolled_k = malloc(sizeof(float)* M*C*K*K);
@@ -220,6 +230,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
         }
     }
     cudaMemcpyToSymbol(unrolled_k_const,w.dptr_, sizeof(float)*C*K*K*M,0);
+
+
+    //***********************************//
     dim3 gridDim(B,M,Z);
     dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
     forward_kernel<<<gridDim,blockDim, 
