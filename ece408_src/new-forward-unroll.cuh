@@ -49,39 +49,7 @@ __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float*
     #undef x4d
 }
 
-// __global__ void unrollk_kernel(int M, int C, int K, const float* k, float* unroll_k){
-//     /*
-//      * DimGrid(ceil(M/TILE_WIDTH),ceil(C*K*K*1.0/TILE_WIDTH),1)
-//      * DimBlock(TILE_WIDTH, TILE_WIDTH,1)
-//      * thread mapped onto unroll_k array
-//      * unroll_k shape: B*M*(C*K*K)
-//      * observation:  for all batches k_unroll is the same so should load it into constant memory. 
-//      * !! unroll_k is of size M*C*K*K <3000 for given data sets, so i suggest use cpu to do unrolling
-//      */
-//     #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-//     #define unroll_k2d(y,x) unroll_k[(y)*(C*K*K)+(x)]
-//     int tx = threadIdx.x;
-//     int ty = threadIdx.y;
-//     int bx = blockIdx.x;
-//     int by = blockIdx.y;
-//     int posx = bx*TILE_WIDTH+tx;
-//     int m = by*TILE_WIDTH+ty; // (posx, posy=m) = locattion in unroll_k
-
-//     int c = posx/(K*K);
-//     int filterx= (posx%(K*K))%K;
-//     int filtery = (posx%(K*K))/K; // (filterx, filtery) = location in k*K filter
-
-//     if(posx<C*K*K && m<M){
-//         unroll_k3d(m,posx)=k4d(m,c,filtery, filterx);
-//     }
-//     #undef k4d
-//     #undef unroll_k3d
-// }
-
-
-
-
-__global__ void matrixMultiply(const float *A, const float *unrolled_x, float *C,
+__global__ void matrixMultiply(const float *A,  float *unrolled_x, float *y,
                                      int numARows, int numAColumns,
                                      int numBRows, int numBColumns,
                                      int numCRows, int numCColumns,
@@ -123,11 +91,12 @@ __global__ void matrixMultiply(const float *A, const float *unrolled_x, float *C
         __syncthreads();
      }  
      //numCRows =M
-     #define C4d(b,m,y,x) C[(b)*(numCRows*H_out*W_out) +(m)*(H_out*W_out)+(y)*(W_out)+(x)]
-     if (Row < numCRows && Col < numCColumns && 
-      blockIdx.z*(numCColumns*numCRows)+Row*numCColumns+Col< 10000) {
+     #define C4d(b,m,y,x) y[(b)*(numCRows*H_out*W_out) +(m)*(H_out*W_out)+(y)*(W_out)+(x)]
+     int idx = blockIdx.z*(numCRows*H_out*W_out)+Row*(H_out*W_out)+ (Col/W_out)*W_out+Col%W_out;
+     if (idx<100) {
+        y[idx]=Pvalue;
         // C4d(blockIdx.z,Row,Col/W_out, Col%W_out)=Pvalue;
-       C[Row*numCColumns+Col] = Pvalue; //?? illegal mem access? blockIdx.z*(numCColumns*numCRows)+
+       // C[1000] = Pvalue; //?? illegal mem access? blockIdx.z*(numCColumns*numCRows)+
 
       }
       // C[blockIdx.z*(numCColumns*numCRows)+Row*numCColumns+Col] = Pvalue; //?? illegal mem access?
