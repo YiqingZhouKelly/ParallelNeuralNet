@@ -44,7 +44,7 @@ __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float*
     #undef x4d
 }
 
-__global__ void forward_kernel(int C, int K, int H, int W, const float* x, float* unroll_x){
+__global__ void unrollx_mapout(int C, int K, int H, int W, const float* x, float* unroll_x){
   // int b = blockIdx.z;
   int H_out = H-K+1;
   int W_out = W-K+1;
@@ -82,13 +82,13 @@ __global__ void matrixMultiply(float *A, float* unrolled_x, float *C, int numARo
 
 
 __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, float* unrolled_x, float*y){
-  //copied from unrollx_mapout
-  __shared__ float tile[150][32/**2*/]; 
+  //copied from unrollx_mapout 
   int b = blockIdx.z;
   int H_out = H-K+1;
   int W_out = W-K+1;
   int posx = blockIdx.x* TILE_WIDTH+threadIdx.x;
   int posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
+  for(int j = 0; j< ceil(C*K*K*1.0/TILE_WIDTH); ++j){
   if(posx<H_out*W_out && posy<C*K*K){
     int c = posy/(K*K);
     int yy = (posy%(K*K))/K;
@@ -99,10 +99,13 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
     xx+=filterStartx;
     #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
     unrolled_x[b*C*K*K*H_out*W_out+posy*H_out*W_out+posx]= x4d(b,c,yy,xx);
+    posy+=TILE_WIDTH;
   }
+}
   //MM
-  __syncthreads();
-  if(blockIdx.y==0){
+     posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
+
+      __shared__ float tile[150][32/**2*/];
       // case1 
       // int b = blockIdx.z;
       // int H_out = H-K+1;
@@ -113,7 +116,7 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
         if(posx/*+j*TILE_WIDTH*/<H_out*W_out){
           for(int i=0;i<ceil(C*K*K*1.0/TILE_WIDTH);++i){
             if(threadIdx.y+TILE_WIDTH*i<C*K*K)
-              tile[i*TILE_WIDTH+threadIdx.y][threadIdx.x/*+j*TILE_WIDTH*/]= unrolled_x[b*C*K*K*W_out*H_out +(posy+TILE_WIDTH*i)*(W_out*H_out)+posx/*+j*TILE_WIDTH*/];
+              tile[i*TILE_WIDTH+threadIdx.y][threadIdx.x/*+j*TILE_WIDTH*/]= unrolled_x[b*C*K*K*W_out*H_out +(threadIdx.y+TILE_WIDTH*i)*(W_out*H_out)+posx/*+j*TILE_WIDTH*/];
           }
         }
       // }
@@ -127,17 +130,16 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
           y[b*M*H_out*W_out+posy*H_out*W_out+posx/*+j*TILE_WIDTH*/]=sum;
         }
       // }
-    }
 
 }
 
 
 
 
-__global__ void specialMM(const float *A,  float *unrolled_x, float *y,
+__global__ void forward_kernel(const float *A,  float *unrolled_x, float *y,
                           int B, int M, int C, int H,  int W, int K){ //input ckkmb
 
-__shared__ float tile[150][32/**2*/]; // case1 
+__shared__ float tile[150][32/**2*/]; // case1
 int b = blockIdx.z;
 int H_out = H-K+1;
 int W_out = W-K+1;
@@ -147,7 +149,7 @@ int posx = blockIdx.x*TILE_WIDTH/**2*/+threadIdx.x; //position of thread in outp
   if(posx/*+j*TILE_WIDTH*/<H_out*W_out){
     for(int i=0;i<ceil(C*K*K*1.0/TILE_WIDTH);++i){
       if(threadIdx.y+TILE_WIDTH*i<C*K*K)
-        tile[i*TILE_WIDTH+threadIdx.y][threadIdx.x/*+j*TILE_WIDTH*/]= unrolled_x[b*C*K*K*W_out*H_out +(posy+TILE_WIDTH*i)*(W_out*H_out)+posx/*+j*TILE_WIDTH*/];
+        tile[i*TILE_WIDTH+threadIdx.y][threadIdx.x/*+j*TILE_WIDTH*/]= unrolled_x[b*C*K*K*W_out*H_out +(threadIdx.y+TILE_WIDTH*i)*(W_out*H_out)+posx/*+j*TILE_WIDTH*/];
     }
   }
 // }
@@ -161,6 +163,7 @@ __syncthreads();
     y[b*M*H_out*W_out+posy*H_out*W_out+posx/*+j*TILE_WIDTH*/]=sum;
   }
 // }
+
 }
 
 __global__ void matrixMultiplyTiled(const float *A,  float *unrolled_x, float *y,
@@ -293,16 +296,16 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     // dim3 DimBlock(TILE_WIDTH,TILE_WIDTH,1);
     // unrollx_kernel<<<DimGrid, DimBlock>>>(C,K,H,W,x.dptr_,unroll_x);
 
-    dim3 DimGridu(ceil(H_out*W_out*1.0/(TILE_WIDTH)), ceil(C*K*K*1.0/TILE_WIDTH),B);
-    dim3 DimBlocku(TILE_WIDTH,TILE_WIDTH,1);
-    // two_in_one<<<DimGridu,DimBlocku>>>(C, K, H, W, M,x.dptr_,unroll_x,y.dptr_);
-    //replaced with two in one
-    forward_kernel<<<DimGridu,DimBlocku>>>(C,K,H,W,x.dptr_,unroll_x);
+    // dim3 DimGridu(ceil(H_out*W_out*1.0/(TILE_WIDTH)), ceil(C*K*K*1.0/TILE_WIDTH),B);
+    // dim3 DimBlocku(TILE_WIDTH,TILE_WIDTH,1);
+    // //replaced with two in one
+    // unrollx_mapout<<<DimGridu,DimBlocku>>>(C,K,H,W,x.dptr_,unroll_x);
 
     dim3 DimGridMM(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH), B);
     dim3 DimBlockMM(TILE_WIDTH,TILE_WIDTH,1);
-    specialMM<<<DimGridMM,DimBlockMM>>>(k_const,unroll_x, y.dptr_,B,M,C,H,W,K);
+    // forward_kernel<<<DimGridMM,DimBlockMM>>>(k_const,unroll_x, y.dptr_,B,M,C,H,W,K);
     
+    two_in_one<<<DimGridMM,DimBlockMM>>>(C, K, H, W, M,x.dptr_,unroll_x,y.dptr_);
 
 
     // matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
