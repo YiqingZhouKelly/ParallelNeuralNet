@@ -2,6 +2,7 @@
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define TILE_WIDTH 32
+#define TILE_WIDTH_SMALL 16
 #include <mxnet/base.h>
 /* Note:
  * Data set1: B =10000, M=6, W=48, H=48, K=5, C=1
@@ -14,6 +15,36 @@ namespace op
 __constant__ float k_const[2400];
 // __constant__ float unrolled_k_const[2400];
 
+__global__ void small_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+{
+    int b,m,h,w,c,p,q;
+    b = blockIdx.x;
+    m = blockIdx.y;
+    
+    const int H_out = H - K + 1;
+    const int W_out = W - K + 1;
+    #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+    #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+    #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+
+    int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
+    h = (blockIdx.z / W_grid)* TILE_WIDTH_SMALL + threadIdx.y;
+    w = (blockIdx.z % W_grid)* TILE_WIDTH_SMALL + threadIdx.x;
+    float sum = 0.0;
+    for(c = 0; c<C; ++c){
+        for(p=0; p<K; ++p){
+            for(q =0; q<K; ++q){
+                    if(w<W_out && h<H_out)
+                        sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+            }
+        }
+    }
+    if(w<W_out && h<H_out)
+        y4d(b,m,h,w) =sum;
+    #undef y4d
+    #undef x4d
+    #undef k4d
+}
 
 __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float* unroll_x){
     #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
@@ -275,6 +306,16 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     const int K = w.shape_[3];
     int H_out = H - K + 1;
     int W_out = W - K + 1;
+    if (C < 3){
+        int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
+        int H_grid = ceil(H_out / (TILE_WIDTH_SMALL*1.0));
+        int Z = H_grid * W_grid;
+        dim3 gridDim(B,M,Z);
+        dim3 blockDim(TILE_WIDTH_SMALL,TILE_WIDTH_SMALL,1);
+        small_kernel<<<gridDim,blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+        MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
+        return;
+    }
 
     int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
     int H_grid = ceil(H_out / (TILE_WIDTH*1.0));
