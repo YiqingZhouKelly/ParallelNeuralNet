@@ -80,8 +80,32 @@ __global__ void matrixMultiply(float *A, float* unrolled_x, float *C, int numARo
   }
 }
 
+__global__ void specialMM(const float *A,  float *unrolled_x, float *y,
+                          int B, int M, int C, int H,  int W, int K){ //input ckkmb
 
+__shared__ float tile[150][32]; // case1 
+int b = blockIdx.z;
+int H_out = H-K+1;
+int W_out = W-K+1;
+int posy = blockIdx.y*TILE_WIDTH+threadIdx.y; //threadidx.y=posy...
+int posx = blockIdx.x*TILE_WIDTH+threadIdx.x; //position of thread in output
+if(posx<H_out*W_out){
+  for(int i=0;i<ceil(C*K*K*1.0/M);++i){
+    if(posy+M*i<C*K*K)
+      tile[M*i+threadIdx.y][threadIdx.x]= unrolled_x[b*C*K*K*W_out*H_out +(posy+M*i)*(W_out*H_out)+posx];
+  }
+}
+__syncthreads();
 
+if(posx<H_out*W_out && posy< M){
+  float sum = 0.;
+  for(int i=0; i<C*K*K; ++i){
+    sum +=k_const[posy*C*K*K+i]* tile[i][threadIdx.x];
+  }
+  y[b*M*H_out*W_out+posy*H_out*W_out+posx]=sum;
+}
+
+}
 
 __global__ void matrixMultiplyTiled(const float *A,  float *unrolled_x, float *y,
                                      int numARows, int numAColumns,
@@ -219,11 +243,12 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
 
     dim3 DimGridMM(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH), B);
     dim3 DimBlockMM(TILE_WIDTH,TILE_WIDTH,1);
-    matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
-                                               M, C*K*K, 
-                                               C*K*K,H_out*W_out,
-                                               M,H_out*W_out,
-                                               W_out,H_out);
+    specialMM<<<DimGridMM,DimBlockMM>>>(k_const,unroll_x, y.dptr_,B,M,C,H,W,K);
+    // matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
+    //                                            M, C*K*K, 
+    //                                            C*K*K,H_out*W_out,
+    //                                            M,H_out*W_out,
+    //                                            W_out,H_out);
     // //***********************************//
     // dim3 gridDim(B,M,Z);
     // dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
