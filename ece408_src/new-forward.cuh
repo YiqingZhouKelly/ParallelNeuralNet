@@ -1,7 +1,7 @@
 
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
-#define TILE_WIDTH 8
+#define TILE_WIDTH 32
 #include <mxnet/base.h>
 /* Note:
  * Data set1: B =10000, M=6, W=48, H=48, K=5, C=1
@@ -11,16 +11,11 @@ namespace mxnet
 {
 namespace op
 {
-// __constant__ float k_const[2400];
-__constant__ float unrolled_k_const[2400];
+__constant__ float k_const[2400];
+// __constant__ float unrolled_k_const[2400];
 
 
 __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float* unroll_x){
-    /* DimGrid(ceil(W*1.0/TILE_WIDTH), ceil(H*1.0/TILE_WIDTH), B*C)
-     * DimBlock(TILE_WIDTH,TILE_WIDTH,1)
-     * threads are mapped to input array x (to reduce mem read)
-     * each thread do global memread only once, but do global write at most K*K times.
-     */
     #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
     int H_out = H-K+1; 
     int W_out = W-K+1;
@@ -37,7 +32,7 @@ __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float*
             for(int q=0; q<K; ++q){ // (p,q) = location in the filter
                 int filterStartx= posx-q;
                 int filterStarty= posy-p;
-                if(filterStarty>=0 && filterStartx>=0){
+                if(filterStarty>=0 && filterStartx>=0 && filterStartx<W_out && filterStarty<H_out){
                     int unroll_col = filterStarty*W_out+ filterStartx;
                     int unroll_row = c*K*K+p*K+q;
                     unrolledx3d(b,unroll_row,unroll_col) = in;
@@ -49,24 +44,55 @@ __global__ void unrollx_kernel(int C, int K,int H, int W, const float* x, float*
     #undef x4d
 }
 
-__global__ void matrixMultiply(const float *A,  float *unrolled_x, float *y,
+__global__ void unrollx_mapout(int C, int K, int H, int W, const float* x, float* unroll_x){
+  int b = blockIdx.z;
+  int H_out = H-K+1;
+  int W_out = W-K+1;
+  int posx = blockIdx.x* TILE_WIDTH+threadIdx.x;
+  int posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
+  if(posx<H_out*W_out && posy<C*K*K){
+    int c = posy/(K*K);
+    int yy = (posy%(K*K))/K;
+    int xx = (posy%(K*K))%K;
+    int filterStartx=posx%W_out;
+    int filterStarty=posx/W_out;
+    yy+=filterStarty;
+    xx+=filterStartx;
+    #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+    unroll_x[b*C*K*K*H_out*W_out+posy*H_out*W_out+posx]= x4d(b,c,yy,xx);
+  }
+}
+
+__global__ void matrixMultiply(float *A, float* unrolled_x, float *C, int numARows,
+                               int numAColumns, int numBRows,
+                               int numBColumns, int numCRows,
+                               int numCColumns, int W_out, int H_out) {
+  int b = blockIdx.z;
+  const float* B = unrolled_x+ blockIdx.z* (numBColumns*numBRows); // b = blockIdx.z
+  int row = blockIdx.y*blockDim.y+threadIdx.y;
+  int col = blockIdx.x*blockDim.x+threadIdx.x;
+  if((row<numCRows) && (col<numCColumns)){
+    float sum = 0.0;
+    for (int k = 0; k < numBRows; k++){
+      sum +=k_const[row*numAColumns+k]*B[k*numBColumns+col];
+    }
+    C[(blockIdx.z)*(numCRows*H_out*W_out) +(row)*(H_out*W_out)+(col/W_out)*(W_out)+(col%W_out)] = sum;
+  }
+}
+
+
+
+
+__global__ void matrixMultiplyTiled(const float *A,  float *unrolled_x, float *y,
                                      int numARows, int numAColumns,
                                      int numBRows, int numBColumns,
                                      int numCRows, int numCColumns,
                                      int W_out, int H_out) {
-    /* Warning: Being lazy, I am abusing notation here. A is a 2d array, unrolled_x and output C are 
-     * both 3D arrays!!  numrow/ numcol for 3D array are the 2 least significant dimension. The most 
-     * significant dim is B, which is mapped to threadidx.z, so do not need to explicitly take care
-     * of it during computation, but you do need to be careful when read/ write to 3D arrays.
-     */
-  // A is already in constant memory
-      const float* B = unrolled_x+ blockIdx.z* (numBColumns*numBRows); // b = blockIdx.z
-      // __shared__ float subTileM[32][32];
-      __shared__ float subTileN[8][8];
+      const float* B = unrolled_x+ blockIdx.z* (numBColumns*numBRows); 
+      __shared__ float subTileN[32][32];
       int bx = blockIdx.x;  int by = blockIdx.y;
       int tx = threadIdx.x; int ty = threadIdx.y;
 
-        // Identify the row and column of the P element to work on
       int Row = by * TILE_WIDTH + ty;
       int Col = bx * TILE_WIDTH + tx;
       float Pvalue = 0;
@@ -76,29 +102,22 @@ __global__ void matrixMultiply(const float *A,  float *unrolled_x, float *y,
       if (numAColumns > Width) Width = numAColumns;
       
       for (int m = 0; m < Width/TILE_WIDTH + 1; ++m) {
-        // Collaborative loading of M and N tiles into shared memory
-        // if (Row < numARows && (m*TILE_WIDTH+tx) < numAColumns) 
-        //   subTileM[ty][tx] = A[Row*numAColumns + m*TILE_WIDTH+tx];
-        // else 
-        //   subTileM[ty][tx] = 0;
         if (Col < numBColumns && (m*TILE_WIDTH+ty) < numBRows)
-          subTileN[ty][tx] = B[threadIdx.z*numBColumns*numBRows+(m*TILE_WIDTH+ty)*numBColumns+Col];
+          subTileN[ty][tx] = B[(m*TILE_WIDTH+ty)*numBColumns+Col];
         else
           subTileN[ty][tx] = 0;
         __syncthreads();
-
+        
         for (int k = 0; k < TILE_WIDTH; ++k)
-              Pvalue += /*subTileM[ty][k]*/unrolled_k_const[Row*numAColumns+m*TILE_WIDTH+k] * subTileN[k][tx];
+          if (Row < numARows && (m*TILE_WIDTH+k) < numAColumns)
+              Pvalue += k_const[Row*numAColumns+m*TILE_WIDTH+k] * subTileN[k][tx];
         __syncthreads();
      }  
-     //numCRows =M
      #define C4d(b,m,y,x) y[(b)*(numCRows*H_out*W_out) +(m)*(H_out*W_out)+(y)*(W_out)+(x)]
      if (Row<numCRows && Col<numCColumns) {
-        // C4d(blockIdx.z,Row,Col/W_out, Col%W_out)=Pvalue;
-          y[(blockIdx.z)*(numCRows*H_out*W_out) +(Row)*(H_out*W_out)+(Col/W_out)*(W_out)+(Col%W_out)]=Pvalue;
+          y[(blockIdx.z)*(numCRows*H_out*W_out) +(Row)*(H_out*W_out)+Col]=Pvalue;
 
       }
-      // C[blockIdx.z*(numCColumns*numCRows)+Row*numCColumns+Col] = Pvalue; //?? illegal mem access?
      #undef C4d
 }
 
@@ -183,33 +202,24 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     int Z = H_grid * W_grid;
 
     // cudaMemcpyToSymbol(k_const,w.dptr_, sizeof(float)*C*K*K*M,0);
-    //*************************************//
-    //cpu unrolling k
+
     float* k = (float*)malloc(sizeof(float)* M*C*K*K);
     cudaMemcpy(k, w.dptr_, sizeof(float)* M*C*K*K, cudaMemcpyDeviceToHost);
-    float* unrolled_k = (float*)malloc(sizeof(float)* M*C*K*K);
-    for(int m=0; m<M; ++m){
-        for(int c=0;c<C;++c){
-            for(int p=0; p<K;++p){
-                for(int q=0; q<K;++q){
-                    unrolled_k[m*C*K*K+c*K*K+p*K+q]=k4d(m,c,p,q);
-                }
-            }
-        }
-    }
-    free(k);
-    cudaMemcpyToSymbol(unrolled_k_const,unrolled_k, sizeof(float)*C*K*K*M,0);
-    free(unrolled_k);
+    cudaMemcpyToSymbol(k_const,k, sizeof(float)*C*K*K*M,0);
     float* unroll_x;
     cudaMalloc((void**)&unroll_x, sizeof(float) *B*C*K*K*H_out*W_out);
 
-    dim3 DimGrid(ceil(W*1.0/TILE_WIDTH), ceil(H*1.0/TILE_WIDTH), B*C);
-    dim3 DimBlock(TILE_WIDTH,TILE_WIDTH,1);
-    unrollx_kernel<<<DimGrid, DimBlock>>>(C,K,H,W,x.dptr_,unroll_x);
+    // dim3 DimGrid(ceil(W*1.0/TILE_WIDTH), ceil(H*1.0/TILE_WIDTH), B*C);
+    // dim3 DimBlock(TILE_WIDTH,TILE_WIDTH,1);
+    // unrollx_kernel<<<DimGrid, DimBlock>>>(C,K,H,W,x.dptr_,unroll_x);
+
+    dim3 DimGridu(ceil(H_out*W_out*1.0/TILE_WIDTH), ceil(C*K*K*1.0/TILE_WIDTH),B);
+    dim3 DimBlocku(TILE_WIDTH,TILE_WIDTH,1);
+    unrollx_mapout<<<DimGridu,DimBlocku>>>(C,K,H,W,x.dptr_,unroll_x);
 
     dim3 DimGridMM(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH), B);
     dim3 DimBlockMM(TILE_WIDTH,TILE_WIDTH,1);
-    matrixMultiply<<<DimGridMM, DimBlockMM>>>(unrolled_k_const,unroll_x, y.dptr_,
+    matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
                                                M, C*K*K, 
                                                C*K*K,H_out*W_out,
                                                M,H_out*W_out,
