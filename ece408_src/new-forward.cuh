@@ -18,29 +18,33 @@ __constant__ float k_const[2400];
 __global__ void small_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
     int b,m,h,w,c,p,q;
-    b = blockIdx.x;
-    m = blockIdx.y;
-    
+    // b = blockIdx.x;
+    // m = blockIdx.y;
+    b = blockIdx.z;
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
     #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-    #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-    #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+    #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i1) * (W) + i0]
+    #define k4d(i3, i2, i1, i0) k_const[(i3) * (C * K * K) + (i1) * (K) + i0]
 
-    int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
-    h = (blockIdx.z / W_grid)* TILE_WIDTH_SMALL + threadIdx.y;
-    w = (blockIdx.z % W_grid)* TILE_WIDTH_SMALL + threadIdx.x;
-    float sum = 0.0;
-    for(c = 0; c<C; ++c){
+    // int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
+    // h = (blockIdx.z / W_grid)* TILE_WIDTH_SMALL + threadIdx.y;
+    // w = (blockIdx.z % W_grid)* TILE_WIDTH_SMALL + threadIdx.x;
+    w=blockIdx.x*TILE_WIDTH_SMALL+threadIdx.x;
+    h=blockIdx.y*TILE_WIDTH_SMALL+threadIdx.y;
+    if(w<W_out && h<H_out){
+    // for(c = 0; c<C; ++c){
+    for(m=0; m<M;++m){
+      float sum = 0.0;
         for(p=0; p<K; ++p){
             for(q =0; q<K; ++q){
-                    if(w<W_out && h<H_out)
-                        sum+= x4d(b,c,h+p,w+q)*k4d(m,c,p,q);
+              sum+= x4d(b,0,h+p,w+q)*k4d(m,0,p,q);
             }
         }
-    }
-    if(w<W_out && h<H_out)
-        y4d(b,m,h,w) =sum;
+    // }
+    y4d(b,m,h,w) =sum;
+  }
+}
     #undef y4d
     #undef x4d
     #undef k4d
@@ -120,8 +124,9 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
   int W_out = W-K+1;
   int posx = blockIdx.x* TILE_WIDTH+threadIdx.x;
   int posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
+  if(posx<H_out*W_out){
   for(int j = 0; j< ceil(C*K*K*1.0/TILE_WIDTH); ++j){
-  if(posx<H_out*W_out && posy<C*K*K){
+  if(posy<C*K*K){
     int c = posy/(K*K);
     int yy = (posy%(K*K))/K+posx/W_out;
     int xx = (posy%(K*K))%K+ posx%W_out;
@@ -149,7 +154,7 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
       // }
       __syncthreads();
       // for(int j=0; j<2; ++j){
-        if(posx/*+j*TILE_WIDTH*/<H_out*W_out && posy< M){
+        if(posy< M){
           float sum = 0.;
           for(int i=0; i<C*K*K; ++i){
             sum +=k_const[posy*C*K*K+i]* tile[i][threadIdx.x/*+j*TILE_WIDTH*/];
@@ -157,6 +162,7 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
           y[b*M*H_out*W_out+posy*H_out*W_out+posx/*+j*TILE_WIDTH*/]=sum;
         }
       // }
+      }
 
 }
 
@@ -307,10 +313,14 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     int H_out = H - K + 1;
     int W_out = W - K + 1;
     if (C < 3){
+        float* k = (float*)malloc(sizeof(float)* M*C*K*K);
+        cudaMemcpy(k, w.dptr_, sizeof(float)* M*C*K*K, cudaMemcpyDeviceToHost);
+        cudaMemcpyToSymbol(k_const,k, sizeof(float)*C*K*K*M,0);
         int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
         int H_grid = ceil(H_out / (TILE_WIDTH_SMALL*1.0));
         int Z = H_grid * W_grid;
-        dim3 gridDim(B,M,Z);
+        // dim3 gridDim(B,M,Z);
+        dim3 gridDim(ceil(W*1.0/TILE_WIDTH_SMALL),ceil(H*1.0/TILE_WIDTH_SMALL),B);
         dim3 blockDim(TILE_WIDTH_SMALL,TILE_WIDTH_SMALL,1);
         small_kernel<<<gridDim,blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
         MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
