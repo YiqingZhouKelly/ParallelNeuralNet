@@ -13,32 +13,46 @@ namespace mxnet
 namespace op
 {
 __constant__ float k_const[2400];
-// __constant__ float unrolled_k_const[2400];
 
-__global__ void small_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
-{
-    int b,m,h,w,c,p,q;
+
+__global__ void small_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K,int H_out, int W_out)
+{   
+    __shared__ float x_shared[400];
+
+    int b,m,h,w,p,q;
     // b = blockIdx.x;
     // m = blockIdx.y;
     b = blockIdx.z;
-    const int H_out = H - K + 1;
-    const int W_out = W - K + 1;
+    // const int H_out = H - K + 1;
+    // const int W_out = W - K + 1;
     #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-    #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i1) * (W) + i0]
-    #define k4d(i3, i2, i1, i0) k_const[(i3) * (C * K * K) + (i1) * (K) + i0]
+    #define x4d(i3, i1, i0) x[(i3) * (C * H * W) + (i1) * (W) + i0]
+    #define k4d(i3, i1, i0) k_const[(i3) * (C * K * K) + (i1) * (K) + i0]
 
     // int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
     // h = (blockIdx.z / W_grid)* TILE_WIDTH_SMALL + threadIdx.y;
     // w = (blockIdx.z % W_grid)* TILE_WIDTH_SMALL + threadIdx.x;
+
+    int tid = threadIdx.y*TILE_WIDTH_SMALL +threadIdx.x;
+    int tileStartx= blockIdx.x*TILE_WIDTH_SMALL;
+    int tileStarty = blockIdx.y*TILE_WIDTH_SMALL;
+    while(tid<400){
+      int offsetx = tid%20;
+      int offsety = tid/20;
+      x_shared[tid] = x4d(b,tileStarty+offsety, tileStartx+offsetx);
+      tid+=TILE_WIDTH_SMALL*TILE_WIDTH_SMALL;
+    }
+
+    __syncthreads();
     w=blockIdx.x*TILE_WIDTH_SMALL+threadIdx.x;
     h=blockIdx.y*TILE_WIDTH_SMALL+threadIdx.y;
     if(w<W_out && h<H_out){
-    // for(c = 0; c<C; ++c){
+    // for(c = 0; c<C; ++c){ 
     for(m=0; m<M;++m){
       float sum = 0.0;
         for(p=0; p<K; ++p){
             for(q =0; q<K; ++q){
-              sum+= x4d(b,0,h+p,w+q)*k4d(m,0,p,q);
+              sum+= /*x4d(b,h+p,w+q)*/ x_shared[20* (threadIdx.y+p)+(threadIdx.x+ q)]*k4d(m,p,q);
             }
         }
     // }
@@ -118,7 +132,7 @@ __global__ void matrixMultiply(float *A, float* unrolled_x, float *C, int numARo
 
 __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, float*y,int H_out, int W_out){
   //copied from unrollx_mapout 
-  __shared__ float tile[150][32/**2*/];
+  __shared__ float tile[150][32];
   int b = blockIdx.z;
   int posx = blockIdx.x* TILE_WIDTH+threadIdx.x;
   int posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
@@ -144,7 +158,7 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
           y[b*M*H_out*W_out+posy*H_out*W_out+posx]=sum;
         }
       }
-
+#undef x4d
 }
 
 
@@ -297,56 +311,23 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
         float* k = (float*)malloc(sizeof(float)* M*C*K*K);
         cudaMemcpy(k, w.dptr_, sizeof(float)* M*C*K*K, cudaMemcpyDeviceToHost);
         cudaMemcpyToSymbol(k_const,k, sizeof(float)*C*K*K*M,0);
-        int W_grid = ceil(W_out / (TILE_WIDTH_SMALL*1.0));
-        int H_grid = ceil(H_out / (TILE_WIDTH_SMALL*1.0));
-        int Z = H_grid * W_grid;
-        // dim3 gridDim(B,M,Z);
+
         dim3 gridDim(ceil(W*1.0/TILE_WIDTH_SMALL),ceil(H*1.0/TILE_WIDTH_SMALL),B);
         dim3 blockDim(TILE_WIDTH_SMALL,TILE_WIDTH_SMALL,1);
-        small_kernel<<<gridDim,blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+        small_kernel<<<gridDim,blockDim>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K,H_out,W_out);
         MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
         return;
     }
 
-    int W_grid = ceil(W_out / (TILE_WIDTH*1.0));
-    int H_grid = ceil(H_out / (TILE_WIDTH*1.0));
-    int Z = H_grid * W_grid;
-
-    // cudaMemcpyToSymbol(k_const,w.dptr_, sizeof(float)*C*K*K*M,0);
-
     float* k = (float*)malloc(sizeof(float)* M*C*K*K);
     cudaMemcpy(k, w.dptr_, sizeof(float)* M*C*K*K, cudaMemcpyDeviceToHost);
     cudaMemcpyToSymbol(k_const,k, sizeof(float)*C*K*K*M,0);
-    // float* unroll_x;
-    // cudaMalloc((void**)&unroll_x, sizeof(float) *B*C*K*K*H_out*W_out);
-
-    // dim3 DimGrid(ceil(W*1.0/TILE_WIDTH), ceil(H*1.0/TILE_WIDTH), B*C);
-    // dim3 DimBlock(TILE_WIDTH,TILE_WIDTH,1);
-    // unrollx_kernel<<<DimGrid, DimBlock>>>(C,K,H,W,x.dptr_,unroll_x);
-
-    // dim3 DimGridu(ceil(H_out*W_out*1.0/(TILE_WIDTH)), ceil(C*K*K*1.0/TILE_WIDTH),B);
-    // dim3 DimBlocku(TILE_WIDTH,TILE_WIDTH,1);
-    // //replaced with two in one
-    // unrollx_mapout<<<DimGridu,DimBlocku>>>(C,K,H,W,x.dptr_,unroll_x);
 
     dim3 DimGridMM(ceil(H_out*W_out*1.0/TILE_WIDTH),ceil(M*1.0/TILE_WIDTH), B);
     dim3 DimBlockMM(TILE_WIDTH,TILE_WIDTH,1);
-    // forward_kernel<<<DimGridMM,DimBlockMM>>>(k_const,unroll_x, y.dptr_,B,M,C,H,W,K);
     
     two_in_one<<<DimGridMM,DimBlockMM>>>(C, K, H, W, M,x.dptr_,y.dptr_, H_out, W_out);
 
-
-    // matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
-    //                                            M, C*K*K, 
-    //                                            C*K*K,H_out*W_out,
-    //                                            M,H_out*W_out,
-    //                                            W_out,H_out);
-    // //***********************************//
-    // dim3 gridDim(B,M,Z);
-    // dim3 blockDim(TILE_WIDTH,TILE_WIDTH,1);
-    // forward_kernel<<<gridDim,blockDim, 
-    //                 sizeof(float)*(C*(TILE_WIDTH+K)*(TILE_WIDTH+K))>>>
-    //                 (y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
     #undef k4d
