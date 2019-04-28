@@ -116,12 +116,10 @@ __global__ void matrixMultiply(float *A, float* unrolled_x, float *C, int numARo
 }
 
 
-__global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, float*y){
+__global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, float*y,int H_out, int W_out){
   //copied from unrollx_mapout 
   __shared__ float tile[150][32/**2*/];
   int b = blockIdx.z;
-  int H_out = H-K+1;
-  int W_out = W-K+1;
   int posx = blockIdx.x* TILE_WIDTH+threadIdx.x;
   int posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
   if(posx<H_out*W_out){
@@ -131,37 +129,20 @@ __global__ void two_in_one(int C, int K, int H, int W, int M,const float* x, flo
     int yy = (posy%(K*K))/K+posx/W_out;
     int xx = (posy%(K*K))%K+ posx%W_out;
     #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-    // unrolled_x[b*C*K*K*H_out*W_out+posy*H_out*W_out+posx]= x4d(b,c,yy,xx);
     tile[posy][threadIdx.x] = x4d(b,c,yy,xx);
     posy+=TILE_WIDTH;
   }
 }
   //MM
      posy = blockIdx.y*TILE_WIDTH +threadIdx.y;
-      // case1 
-      // int b = blockIdx.z;
-      // int H_out = H-K+1;
-      // int W_out = W-K+1;
-      // int posy = blockIdx.y*TILE_WIDTH+threadIdx.y; //threadidx.y=posy...
-      // int posx = blockIdx.x*TILE_WIDTH/**2*/+threadIdx.x; //position of thread in output
-      // for(int j=0; j<2; ++j){
-        // if(posx/*+j*TILE_WIDTH*/<H_out*W_out){
-        //   for(int i=0;i<ceil(C*K*K*1.0/TILE_WIDTH);++i){
-        //     if(threadIdx.y+TILE_WIDTH*i<C*K*K)
-        //       tile[i*TILE_WIDTH+threadIdx.y][threadIdx.x/*+j*TILE_WIDTH*/]= unrolled_x[b*C*K*K*W_out*H_out +(threadIdx.y+TILE_WIDTH*i)*(W_out*H_out)+posx/*+j*TILE_WIDTH*/];
-        //   }
-        // }
-      // }
       __syncthreads();
-      // for(int j=0; j<2; ++j){
         if(posy< M){
           float sum = 0.;
           for(int i=0; i<C*K*K; ++i){
-            sum +=k_const[posy*C*K*K+i]* tile[i][threadIdx.x/*+j*TILE_WIDTH*/];
+            sum +=k_const[posy*C*K*K+i]* tile[i][threadIdx.x];
           }
-          y[b*M*H_out*W_out+posy*H_out*W_out+posx/*+j*TILE_WIDTH*/]=sum;
+          y[b*M*H_out*W_out+posy*H_out*W_out+posx]=sum;
         }
-      // }
       }
 
 }
@@ -352,7 +333,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y,
     dim3 DimBlockMM(TILE_WIDTH,TILE_WIDTH,1);
     // forward_kernel<<<DimGridMM,DimBlockMM>>>(k_const,unroll_x, y.dptr_,B,M,C,H,W,K);
     
-    two_in_one<<<DimGridMM,DimBlockMM>>>(C, K, H, W, M,x.dptr_,y.dptr_);
+    two_in_one<<<DimGridMM,DimBlockMM>>>(C, K, H, W, M,x.dptr_,y.dptr_, H_out, W_out);
 
 
     // matrixMultiplyTiled<<<DimGridMM, DimBlockMM>>>(k_const,unroll_x, y.dptr_,
